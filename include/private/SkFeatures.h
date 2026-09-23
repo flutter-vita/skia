@@ -26,7 +26,15 @@
     #elif defined(linux) || defined(__linux) || defined(__FreeBSD__) || \
           defined(__OpenBSD__) || defined(__sun) || defined(__NetBSD__) || \
           defined(__DragonFly__) || defined(__Fuchsia__) || \
-          defined(__GLIBC__) || defined(__GNU__) || defined(__unix__)
+          defined(__GLIBC__) || defined(__GNU__) || defined(__unix__) || \
+          defined(__vita__)
+        // PlayStation Vita (VitaSDK, newlib). Its GCC defines only __vita__ --
+        // not __unix__ -- so without this line the chain falls all the way
+        // through to the #else below and Skia decides it is building for macOS,
+        // reaching for <dispatch/dispatch.h> and Core Text. It is close enough
+        // to Unix for Skia's purposes: real pthreads, POSIX semaphores, and
+        // open/read/close. What it does *not* have is mmap, so SkOSFile_posix's
+        // mapped-file path will not link; the embedder is expected to avoid it.
         #define SK_BUILD_FOR_UNIX
     #elif TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR
         #define SK_BUILD_FOR_IOS
