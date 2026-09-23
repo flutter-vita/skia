@@ -15,10 +15,16 @@
 #include <new>
 #include <stdio.h>
 #include <string.h>
+#if !defined(__vita__)
 #include <sys/mman.h>
+#endif
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+#if defined(__vita__)
+#include "include/private/base/SkMalloc.h"
+#endif
 
 #ifdef SK_BUILD_FOR_IOS
 #include "src/ports/SkOSFile_ios.h"
@@ -77,6 +83,71 @@ bool sk_fidentical(FILE* a, FILE* b) {
            && aID.dev == bID.dev;
 }
 
+#if defined(__vita__)
+
+// The Vita has no mmap: newlib's file IO is sceIo underneath, and sceIo has no
+// mapping call. Read the file into the heap instead.
+//
+// Returning nullptr here would have been the smaller change, and it would have
+// been wrong. SkData::MakeFromFileName has no fallback -- a null from
+// sk_fdmmap propagates straight out as a null SkData -- so every font and image
+// Skia loads by path would silently fail to load. A heap copy is what the
+// caller actually needs: a read-only snapshot of the contents, released through
+// sk_fmunmap. It is not lazily paged, which costs memory on a device with
+// 188 MiB of contiguous RAM, and that is the price of the platform having no
+// mapping call at all.
+
+void sk_fmunmap(const void* addr, size_t length) {
+    sk_free(const_cast<void*>(addr));
+}
+
+void* sk_fdmmap(int fd, size_t* size) {
+    struct stat status = {};
+    if (0 != fstat(fd, &status)) {
+        return nullptr;
+    }
+    if (!S_ISREG(status.st_mode)) {
+        return nullptr;
+    }
+    if (!SkTFitsIn<size_t>(status.st_size)) {
+        return nullptr;
+    }
+    size_t fileSize = static_cast<size_t>(status.st_size);
+
+    void* addr = sk_malloc_canfail(fileSize ? fileSize : 1);
+    if (!addr) {
+        return nullptr;
+    }
+
+    // mmap ignores the descriptor's file position, so this must too, and must
+    // leave it where it found it -- the caller still owns the FILE*.
+    off_t saved = lseek(fd, 0, SEEK_CUR);
+    if (saved < 0 || lseek(fd, 0, SEEK_SET) < 0) {
+        sk_free(addr);
+        return nullptr;
+    }
+
+    size_t got = 0;
+    while (got < fileSize) {
+        ssize_t n = read(fd, static_cast<char*>(addr) + got, fileSize - got);
+        if (n <= 0) {
+            break;
+        }
+        got += static_cast<size_t>(n);
+    }
+    lseek(fd, saved, SEEK_SET);
+
+    if (got != fileSize) {
+        sk_free(addr);
+        return nullptr;
+    }
+
+    *size = fileSize;
+    return addr;
+}
+
+#else
+
 void sk_fmunmap(const void* addr, size_t length) {
     munmap(const_cast<void*>(addr), length);
 }
@@ -102,6 +173,8 @@ void* sk_fdmmap(int fd, size_t* size) {
     *size = fileSize;
     return addr;
 }
+
+#endif  // defined(__vita__)
 
 int sk_fileno(FILE* f) {
     return fileno(f);
